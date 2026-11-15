@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MetaDesk Online · Panel de Dota 2 independiente</title>
+<style>
+:root{color-scheme:dark;--bg:#0d1420;--panel:#192538;--edge:#304159;--muted:#a7b7cb;--accent:#64b2f5}
+*{box-sizing:border-box}body{background:var(--bg);color:#f0f6fe;margin:0;font:15px/1.5 system-ui,Segoe UI,sans-serif}
+main{max-width:1080px;margin:auto;padding:26px 18px 60px}header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-size:27px;margin:0}.eyebrow{color:var(--accent);font-size:12px;text-transform:uppercase;letter-spacing:1.5px}
+p{color:var(--muted)}section{margin-top:22px;padding:18px;border-radius:15px;background:var(--panel);border:1px solid var(--edge)}
+.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}button,input,select{font:inherit;border-radius:9px;padding:10px 13px}
+button{background:#3d94da;color:#fff;border:0;cursor:pointer}button.secondary{background:#2b3a4d}button:disabled{opacity:.5}
+input,select{background:#111c2a;color:#fff;border:1px solid #466079;min-width:130px}
+input[type=file]{max-width:230px}
+.stats{display:flex;gap:24px;flex-wrap:wrap;margin-top:10px;color:var(--muted)}
+b{color:#fff}table{border-collapse:collapse;width:100%;margin-top:16px}th,td{padding:11px 10px;text-align:left;border-bottom:1px solid #324058}
+th{color:#b5c9dd;font-weight:600}td:last-child{text-align:right}.fav{font-size:22px;background:transparent;color:#f9cc70;line-height:1}
+.status{min-height:24px;color:#f8d899}.dim{color:var(--muted)}.tiers{font-weight:bold}
+.timer{font-variant-numeric:tabular-nums;font-size:25px;font-weight:bold;letter-spacing:1px;margin:8px 0 14px}
+.note{font-size:13px;color:#b0bfd0}
+@media(max-width:620px){table{font-size:12px}th,td{padding:8px 5px}main{padding:14px 9px}.wide{display:none}h1{font-size:24px}}
+</style></head><body><main>
+<header><div><div class="eyebrow">Aplicacion web independiente</div><h1>MetaDesk Online</h1></div>
+<div class="actions"><button id="refresh">Actualizar estadísticas</button><button id="export" class="secondary">Exportar CSV</button></div></header>
+<p>Estadísticas públicas de héroes y herramientas manuales, sin instalación, sin acceder al cliente Octarine ni al proceso de Dota 2.</p>
+<section><h2>Héroes y clasificación</h2>
+<div class="actions"><input id="search" type="search" placeholder="Buscar héroe" aria-label="Buscar héroe">
+<select id="tier" aria-label="Filtrar clasificación"><option value="">Todos los tiers</option><option>S</option><option>A</option><option>B</option><option>C</option><option>D</option><option>N/D</option></select>
+<label class="note"><input id="onlyfav" type="checkbox"> Solo favoritos</label>
+<label class="note">Importar JSON: <input id="upload" type="file" accept="application/json,.json"></label></div>
+<div class="stats"><span>Héroes: <b id="count">0</b></span><span>Última carga: <b id="updated">Pendiente</b></span><span>Fuente: <b id="source">Sin datos</b></span></div>
+<div id="status" class="status" role="status"></div>
+<div style="overflow:auto"><table><thead><tr><th>Favorito</th><th>Héroe</th><th class="wide">Partidas pro</th><th>Victoria pro</th><th>Tier</th></tr></thead><tbody id="heroes"></tbody></table></div>
+<p class="note">Tiers orientativos S/A/B/C/D basados en la tasa de victoria profesional de los datos disponibles. Con menos de 20 partidas se muestra N/D. No son clasificaciones oficiales.</p></section>
+<section><h2>Temporizador manual</h2><p>Herramienta de estudio y práctica. No lee datos del juego.</p><div class="timer" id="clock">05:00</div>
+<div class="actions"><button id="start">Iniciar / reiniciar 5 min</button><button id="pause" class="secondary">Pausar</button><button id="reset" class="secondary">Restablecer</button></div></section>
+<p class="note">MetaDesk es independiente y no está afiliado con Valve ni con Octarine. Tus favoritos se guardan solo en este navegador. En modo web no existe inyección de procesos, acceso a servidores privados ni elusión de suscripciones.</p>
+</main><script>
+'use strict';
+const $ = q => document.querySelector(q);
+const key = 'metadesk-online-favs-v1';
+const favorites = new Set(JSON.parse(localStorage.getItem(key) || '[]'));
+let heroes = [], source = 'Sin datos', updated = '';
+let remain=300, started=0, running=false, timerId=null;
+const tierOf = (wins,picks) => picks<20?'N/D':(wins*100/picks>=55?'S':wins*100/picks>=52?'A':wins*100/picks>=49?'B':wins*100/picks>=46?'C':'D');
+function normalized(raw) {
+  if(!Array.isArray(raw)||raw.length>500)throw Error('Se esperaba una lista JSON de héroes');
+  const seen=new Set();
+  return raw.map(x=>{
+    const id=Number(x.id), name=String(x.localized_name||'').trim();
+    const picks=Number(x.pro_pick||0), wins=Number(x.pro_win||0);
+    if(!Number.isSafeInteger(id)||id<=0||!name||name.length>130||!Number.isSafeInteger(picks)||!Number.isSafeInteger(wins)||picks<0||wins<0||wins>picks||seen.has(id))
+      throw Error('Archivo con héroes inválidos o duplicados');
+    seen.add(id);
+    return {id,name,picks,wins,tier:tierOf(wins,picks)};
+  }).sort((a,b)=>a.name.localeCompare(b.name,'es'));
+}
+function render() {
+  const q=$('#search').value.trim().toLocaleLowerCase('es'), t=$('#tier').value, favOnly=$('#onlyfav').checked;
+  const selected=heroes.filter(h=>h.name.toLocaleLowerCase('es').includes(q)&&(!t||h.tier===t)&&(!favOnly||favorites.has(h.id)));
+  const parent=$('#heroes'); parent.replaceChildren();
+  for(const h of selected) {
+    const tr=document.createElement('tr');
+    const fav=document.createElement('td'), button=document.createElement('button');button.className='fav';button.textContent=favorites.has(h.id)?'★':'☆';
+    button.setAttribute('aria-label','Alternar favorito '+h.name);
+    button.onclick=()=>{ favorites.has(h.id)?favorites.delete(h.id):favorites.add(h.id); localStorage.setItem(key,JSON.stringify([...favorites]));render(); };
+    fav.append(button);tr.append(fav);
+    const name=document.createElement('td');name.textContent=h.name;tr.append(name);
+    const picks=document.createElement('td');picks.className='wide';picks.textContent=h.picks.toLocaleString('es');tr.append(picks);
+    const rate=document.createElement('td');rate.textContent=h.picks>=20?(h.wins*100/h.picks).toFixed(1)+' %':'N/D';tr.append(rate);
+    const tier=document.createElement('td');tier.className='tiers';tier.textContent=h.tier;tr.append(tier);
+    parent.append(tr);
+  }
+  $('#count').textContent=String(selected.length);
+  $('#updated').textContent=updated||'Pendiente';
+  $('#source').textContent=source;
+}
+async function refresh() {
+  $('#refresh').disabled=true;$('#status').textContent='Consultando la API pública de OpenDota…';
+  try {const r=await fetch('https://api.opendota.com/api/heroStats',{cache:'no-store'});
+    if(!r.ok)throw Error('HTTP '+r.status);
+    heroes=normalized(await r.json());source='OpenDota';updated=new Date().toLocaleString('es');$('#status').textContent='Datos actualizados';render();
+  } catch(e){$('#status').textContent='Sin conexión o sin acceso CORS: '+e.message+'. Puedes importar un archivo JSON.';}
+  finally{$('#refresh').disabled=false;}
+}
+$('#refresh').onclick=refresh;
+$('#search').oninput=render;$('#tier').onchange=render;$('#onlyfav').onchange=render;
+$('#upload').onchange=async e=>{const file=e.target.files[0];if(!file)return;
+  try{if(file.size>8*1024*1024)throw Error('Archivo mayor que 8 MiB');heroes=normalized(JSON.parse(await file.text()));source='JSON importado';updated=new Date().toLocaleString('es');$('#status').textContent='Importación correcta';render();}
+  catch(err){$('#status').textContent='Error: '+err.message;}
+};
+$('#export').onclick=()=>{const rows=[['id','heroe','selecciones_pro','victorias_pro','tier'],...heroes.map(h=>[h.id,h.name,h.picks,h.wins,h.tier])];
+  const csv=rows.map(row=>row.map(x=>'"'+String(x).replaceAll('"','""')+'"').join(';')).join('\r\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}));a.download='metadesk-heroes.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+};
+function drawClock(){const v=running?Math.max(0,remain-Math.floor((Date.now()-started)/1000)):remain;$('#clock').textContent=String(Math.floor(v/60)).padStart(2,'0')+':'+String(v%60).padStart(2,'0');if(v===0){running=false;clearInterval(timerId);timerId=null;}}
+$('#start').onclick=()=>{remain=300;started=Date.now();running=true;clearInterval(timerId);timerId=setInterval(drawClock,250);drawClock();};
+$('#pause').onclick=()=>{if(running){remain=Math.max(0,remain-Math.floor((Date.now()-started)/1000));running=false;clearInterval(timerId);timerId=null;}drawClock();};
+$('#reset').onclick=()=>{running=false;remain=300;clearInterval(timerId);timerId=null;drawClock();};
+render();drawClock();
+</script></body></html>
